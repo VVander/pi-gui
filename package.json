@@ -1,0 +1,27 @@
+{
+  "name": "pi-gui",
+  "version": "1.0.0",
+  "description": "Web GUI for the pi coding agent, accessed securely via SSH tunnel",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"vite\" \"tsx watch server/index.ts\"",
+    "build": "vite build",
+    "start": "node dist-server/index.js",
+    "build:server": "tsc -p tsconfig.server.json",
+    "build:all": "npm run build && npm run build:server"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.14",
+    "concurrently": "^9.0.0",
+    "highlight.js": "^11.11.1",
+    "marked": "^15.0.0",
+    "marked-highlight": "^2.2.1",
+    "tsx": "^4.0.0",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0"
+  }
+}

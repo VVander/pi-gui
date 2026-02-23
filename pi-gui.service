@@ -1,0 +1,24 @@
+[Unit]
+Description=pi-gui – Web GUI for the pi coding agent
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/dev/pi-gui
+
+# Load environment from pi's default location so API keys are available
+EnvironmentFile=-/root/.pi/agent/.env
+
+# Run the pre-compiled server bundle
+ExecStart=/usr/bin/node dist-server/index.js
+Restart=on-failure
+RestartSec=5
+
+# Keep stdout/stderr in the journal
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pi-gui
+
+[Install]
+WantedBy=multi-user.target

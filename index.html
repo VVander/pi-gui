@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>pi-gui</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>" />
+  </head>
+  <body>
+    <div id="app">
+      <header id="header">
+        <div class="header-left">
+          <span class="logo">π</span>
+          <span class="logo-text">pi-gui</span>
+          <span id="status-dot" class="status-dot disconnected" title="Disconnected"></span>
+          <span id="status-text" class="status-text">Connecting…</span>
+        </div>
+        <div class="header-right">
+          <button id="btn-new" class="btn btn-ghost" title="New session">＋ New</button>
+        </div>
+      </header>
+
+      <div id="messages" class="messages"></div>
+
+      <!-- Streaming indicator (shown while agent is working) -->
+      <div id="streaming-indicator" class="streaming-indicator hidden">
+        <span class="spinner"></span> Working…
+      </div>
+
+      <div id="input-bar" class="input-bar">
+        <textarea
+          id="prompt-input"
+          class="prompt-input"
+          placeholder="Send a message… (Enter to send, Shift+Enter for newline)"
+          rows="1"
+          autofocus
+        ></textarea>
+        <button id="btn-send" class="btn btn-primary" title="Send (Enter)">Send</button>
+        <button id="btn-abort" class="btn btn-danger hidden" title="Abort">Stop</button>
+      </div>
+    </div>
+
+    <!-- Extension UI dialog overlay -->
+    <div id="dialog-overlay" class="dialog-overlay hidden">
+      <div id="dialog-box" class="dialog-box">
+        <div id="dialog-title" class="dialog-title"></div>
+        <div id="dialog-message" class="dialog-message"></div>
+        <div id="dialog-body" class="dialog-body"></div>
+        <div id="dialog-actions" class="dialog-actions"></div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
