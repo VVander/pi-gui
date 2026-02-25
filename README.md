@@ -27,23 +27,27 @@ Host your-vps
 ## Architecture
 
 ```
-Browser (localhost:8080)
+Browser tabs (localhost:8080)
   │
   │  SSH tunnel
   │
   └─► pi-gui server (127.0.0.1:8080)  ← binds here only
         │
-        │  WebSocket /ws
-        │
-        ├─► pi --mode rpc  (one process per browser tab)
-        │     stdin/stdout: JSON RPC protocol
+        ├─► AgentSession (in-process, shared across all tabs)
+        │     Uses pi SDK directly — no subprocess spawning
         │     tools: bash, read, edit, write …
         │
         └─► static files (dist/)
 ```
 
-Each browser tab gets its own dedicated `pi` process with full tool access.
-The pi process inherits the server's environment (API keys, settings, etc.).
+A single `AgentSession` instance runs inside the server process.
+All browser tabs share the same conversation — events are broadcast to every
+connected client in real time.  When a new tab connects, it receives the
+full conversation history via a `state_sync` message.
+
+This follows the [pi SDK recommendation](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/sdk.md)
+for Node.js applications to use `AgentSession` directly rather than spawning
+`pi --mode rpc` subprocesses.
 
 ## Setup
 
@@ -89,9 +93,12 @@ journalctl -u pi-gui -f
 | Send message | Type and press **Enter** |
 | New line in message | **Shift+Enter** |
 | Abort generation | Click **Stop** button |
-| New session | Click **＋ New** in the header |
+| New session | Click **＋ New** in the header (resets for all tabs) |
 | Expand tool output | Click any tool card |
 | Expand thinking | Click the 💭 Thinking block |
+
+**Note:** All connected tabs share the same session.  Starting a new session
+or sending a prompt from any tab affects every tab.
 
 ## Project structure
 
@@ -102,7 +109,7 @@ pi-gui/
 │   ├── main.ts           Frontend app (TypeScript)
 │   └── style.css         Dark theme
 ├── server/
-│   └── index.ts          WebSocket + HTTP server
+│   └── index.ts          WebSocket + HTTP server (AgentSession in-process)
 ├── dist/                 Built frontend (git-ignored)
 ├── dist-server/          Built server  (git-ignored)
 ├── pi-gui.service        systemd unit file

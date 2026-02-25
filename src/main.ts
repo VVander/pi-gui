@@ -127,9 +127,82 @@ function send(cmd: object) {
   }
 }
 
+// ── State sync handler ────────────────────────────────────────────────────────
+// Rebuilds the conversation from the full message array sent on connect or
+// after a new_session command.
+function handleStateSync(data: Record<string, unknown>) {
+  const messages = data.messages as Array<Record<string, unknown>> | undefined;
+  state.items = [];
+  currentAssistantItem = null;
+  state.streaming = (data.streaming as boolean) ?? false;
+
+  if (messages) {
+    for (const msg of messages) {
+      if (msg.role === "user") {
+        const content = msg.content;
+        let text: string;
+        if (typeof content === "string") {
+          text = content;
+        } else if (Array.isArray(content)) {
+          text = (content as Array<Record<string, unknown>>)
+            .filter((c) => c.type === "text")
+            .map((c) => c.text as string)
+            .join("\n");
+        } else {
+          text = String(content);
+        }
+        state.items.push({ kind: "user", text });
+      } else if (msg.role === "assistant") {
+        const contentArr = msg.content as Array<Record<string, unknown>> | undefined;
+        const blocks: Block[] = [];
+        if (contentArr) {
+          for (const c of contentArr) {
+            if (c.type === "text") {
+              blocks.push({ type: "text", text: c.text as string });
+            } else if (c.type === "thinking") {
+              blocks.push({ type: "thinking", text: c.thinking as string, expanded: false });
+            } else if (c.type === "toolCall") {
+              blocks.push({
+                type: "tool",
+                callId: c.id as string,
+                name: c.name as string,
+                args: c.arguments,
+                output: "",
+                isError: false,
+                running: false,
+                expanded: false,
+              });
+            }
+          }
+        }
+        state.items.push({ kind: "assistant", blocks, streaming: false });
+      } else if (msg.role === "toolResult") {
+        // Attach tool output to the matching tool block
+        const callId = msg.toolCallId as string;
+        const content = (msg.content as Array<Record<string, unknown>> | undefined)?.[0];
+        const text = content?.type === "text" ? (content.text as string) : "";
+        findToolBlock(callId, (b) => {
+          b.output = text;
+          b.running = false;
+          b.isError = (msg.isError as boolean) ?? false;
+          if (b.isError) b.expanded = true;
+        });
+      }
+    }
+  }
+
+  renderMessages();
+  updateStatus();
+}
+
 // ── RPC event handler ─────────────────────────────────────────────────────────
 function handleServerEvent(event: Record<string, unknown>) {
   switch (event.type) {
+    case "state_sync": {
+      handleStateSync(event);
+      return; // already rendered
+    }
+
     case "agent_start": {
       state.streaming = true;
       currentAssistantItem = { kind: "assistant", blocks: [], streaming: true };
@@ -514,13 +587,9 @@ function sendPrompt() {
 $btnSend.addEventListener("click", sendPrompt);
 $btnAbort.addEventListener("click", () => send({ type: "abort" }));
 $btnNew.addEventListener("click", () => {
-  // Start a fresh pi session by closing + reopening WebSocket
-  if (ws) { ws.onclose = null; ws.close(); }
-  state.items = [];
-  state.streaming = false;
-  currentAssistantItem = null;
-  renderMessages();
-  connect();
+  // Ask the server to start a new session (shared across all tabs).
+  // The server will broadcast a state_sync event to every connected client.
+  send({ type: "new_session" });
 });
 
 $input.addEventListener("keydown", (e) => {
