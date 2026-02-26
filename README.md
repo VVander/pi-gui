@@ -2,7 +2,8 @@
 
 A minimal, secure web GUI for the [pi coding agent](https://github.com/badlogic/pi-mono).
 
-<img width="800" height="600" alt="image" src="https://github.com/user-attachments/assets/cbd44357-b97b-421d-bc2e-5346549b3bb5" />
+<img width="1055" height="863" alt="image" src="https://github.com/user-attachments/assets/b4527eb5-a4a4-490d-bbd0-d046ea8755e6" />
+
 
 
 ## Security model
