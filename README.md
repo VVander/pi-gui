@@ -1,4 +1,4 @@
-# pi-gui
+# pi-remote-web-ui
 
 A minimal, secure web GUI for the [pi coding agent](https://github.com/badlogic/pi-mono).
 
@@ -35,7 +35,7 @@ Browser tabs (localhost:8080)
   │
   │  SSH tunnel
   │
-  └─► pi-gui server (127.0.0.1:8080)  ← binds here only
+  └─► pi-remote-web-ui server (127.0.0.1:8080)  ← binds here only
         │
         ├─► AgentSession (in-process, shared across all tabs)
         │     Uses pi SDK directly — no subprocess spawning
@@ -58,7 +58,7 @@ for Node.js applications to use `AgentSession` directly rather than spawning
 ### 1. Install dependencies & build
 
 ```bash
-cd ~/dev/pi-gui
+cd ~/dev/pi-remote-web-ui
 npm install
 npm run build        # builds frontend → dist/
 npm run build:server # compiles server → dist-server/
@@ -79,15 +79,15 @@ Then SSH in with port forwarding and open http://localhost:8080.
 ### 3. Install as a systemd service (runs on boot, auto-restarts)
 
 ```bash
-sudo cp pi-gui.service /etc/systemd/system/
+sudo cp pi-remote-web-ui.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now pi-gui
-sudo systemctl status pi-gui
+sudo systemctl enable --now pi-remote-web-ui
+sudo systemctl status pi-remote-web-ui
 ```
 
 View logs:
 ```bash
-journalctl -u pi-gui -f
+journalctl -u pi-remote-web-ui -f
 ```
 
 ## Usage
@@ -107,17 +107,17 @@ or sending a prompt from any tab affects every tab.
 ## Project structure
 
 ```
-pi-gui/
-├── index.html            Frontend entry point
+pi-remote-web-ui/
+├── index.html                  Frontend entry point
 ├── src/
-│   ├── main.ts           Frontend app (TypeScript)
-│   └── style.css         Dark theme
+│   ├── main.ts                 Frontend app (TypeScript)
+│   └── style.css               Dark theme
 ├── server/
-│   └── index.ts          WebSocket + HTTP server (AgentSession in-process)
-├── dist/                 Built frontend (git-ignored)
-├── dist-server/          Built server  (git-ignored)
-├── pi-gui.service        systemd unit file
-├── vite.config.ts        Frontend build config
-├── tsconfig.json         Frontend TypeScript config
-└── tsconfig.server.json  Server TypeScript config
+│   └── index.ts                WebSocket + HTTP server (AgentSession in-process)
+├── dist/                       Built frontend (git-ignored)
+├── dist-server/                Built server  (git-ignored)
+├── pi-remote-web-ui.service    systemd unit file
+├── vite.config.ts              Frontend build config
+├── tsconfig.json               Frontend TypeScript config
+└── tsconfig.server.json        Server TypeScript config
 ```

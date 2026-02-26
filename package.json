@@ -1,5 +1,5 @@
 {
-  "name": "pi-gui",
+  "name": "pi-remote-web-ui",
   "version": "1.0.0",
   "description": "Web GUI for the pi coding agent, accessed securely via SSH tunnel",
   "type": "module",
