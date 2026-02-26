@@ -1,5 +1,5 @@
 /**
- * pi-gui server
+ * pi-remote-web-ui server
  *
  * Binds to 127.0.0.1:8080 only.  Access is via SSH port-forwarding:
  *   ssh -L 8080:localhost:8080 user@your-vps
@@ -382,7 +382,7 @@ async function main() {
   });
 
   server.listen(PORT, HOST, () => {
-    console.log(`pi-gui listening on http://${HOST}:${PORT}`);
+    console.log(`pi-remote-web-ui listening on http://${HOST}:${PORT}`);
     console.log(
       `Access via SSH tunnel: ssh -L ${PORT}:localhost:${PORT} user@your-vps`,
     );

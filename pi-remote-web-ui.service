@@ -1,11 +1,11 @@
 [Unit]
-Description=pi-gui – Web GUI for the pi coding agent
+Description=pi-remote-web-ui – Web GUI for the pi coding agent
 After=network.target
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/root/dev/pi-gui
+WorkingDirectory=/root/dev/pi-remote-web-ui
 
 # Load environment from pi's default location so API keys are available
 EnvironmentFile=-/root/.pi/agent/.env
@@ -18,7 +18,7 @@ RestartSec=5
 # Keep stdout/stderr in the journal
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=pi-gui
+SyslogIdentifier=pi-remote-web-ui
 
 [Install]
 WantedBy=multi-user.target
