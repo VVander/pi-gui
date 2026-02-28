@@ -2,6 +2,10 @@
 
 A minimal, secure web GUI for the [pi coding agent](https://github.com/badlogic/pi-mono).
 
+<img width="1055" height="863" alt="image" src="https://github.com/user-attachments/assets/b4527eb5-a4a4-490d-bbd0-d046ea8755e6" />
+
+
+
 ## Security model
 
 The server **only binds to `127.0.0.1`** – it is never reachable from the internet.
