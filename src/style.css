@@ -37,18 +37,30 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 /* ── Header ──────────────────────────────────────────────────────────────── */
 #header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 16px;
+  align-items: flex-end;   /* children sit at the bottom so tabs can "connect" to the border */
   height: 48px;
   border-bottom: 1px solid var(--border);
   background: var(--bg2);
   flex-shrink: 0;
+  min-width: 0;
+  /* Allow active tab to poke 1px below to cover the border */
+  overflow: visible;
+  position: relative;
+  z-index: 10;
 }
-.header-left { display: flex; align-items: center; gap: 8px; }
-.header-right { display: flex; align-items: center; gap: 8px; }
-.logo { font-size: 22px; font-weight: 700; color: var(--accent); line-height: 1; }
-.logo-text { font-size: 16px; font-weight: 600; color: var(--text); }
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 7px 16px;
+  flex-shrink: 0;
+  height: 100%;
+  border-right: 1px solid var(--border);
+}
+
+.logo { font-size: 20px; font-weight: 700; color: var(--accent); line-height: 1; }
+.logo-text { font-size: 13px; font-weight: 600; color: var(--text-muted); letter-spacing: 0.01em; }
 
 .status-dot {
   width: 8px; height: 8px;
@@ -60,7 +72,155 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 .status-dot.streaming    { background: var(--warning); animation: pulse 1s infinite; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
 
-.status-text { font-size: 12px; color: var(--text-muted); }
+.status-text { font-size: 11px; color: var(--text-muted); }
+
+/* ── Tab bar ─────────────────────────────────────────────────────────────── */
+.tab-bar {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: flex-end;   /* tabs sit at the bottom of the 48px bar */
+  padding: 0 8px 0 6px;
+  gap: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.tab-bar::-webkit-scrollbar { display: none; }
+
+/* ── Find-sessions button (left of first tab) ─────────────────────────── */
+.btn-find-sessions {
+  flex-shrink: 0;
+  align-self: center;
+  margin-bottom: 2px;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  margin-right: 4px;
+  padding: 0;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.btn-find-sessions:hover {
+  background: var(--bg3);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+/* ── Individual tab ──────────────────────────────────────────────────────── */
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 33px;
+  padding: 0 6px 0 11px;
+  /* Classic browser-tab shape: rounded top corners only */
+  border-radius: 6px 6px 0 0;
+  border: 1px solid transparent;
+  border-bottom: none;
+  cursor: pointer;
+  min-width: 90px;
+  max-width: 200px;
+  flex-shrink: 0;
+  background: transparent;
+  position: relative;
+  /* Small horizontal margin so tabs don't touch each other */
+  margin: 0 1px;
+  transition: background 0.12s, border-color 0.12s;
+  user-select: none;
+}
+
+.tab:hover:not(.active) {
+  background: color-mix(in srgb, var(--bg3) 60%, transparent);
+  border-color: var(--border);
+}
+
+.tab.active {
+  /* Taller than inactive: the extra px pokes below the header border-bottom */
+  height: 36px;
+  background: var(--bg3);
+  border-color: var(--border2);
+  /* bottom border matches header bg → visually "cuts" the header border */
+  border-bottom: 1px solid var(--bg2);
+  /* slide down 1px so that bottom covers the header's border-bottom exactly */
+  position: relative;
+  bottom: -1px;
+  z-index: 11;   /* above the header's z-index so it overlaps properly */
+}
+
+.tab-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.tab.active .tab-label { color: var(--text); font-weight: 500; }
+
+.tab-close {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  border: none;
+  background: transparent;
+  /* Hidden until tab is hovered or active */
+  color: transparent;
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.1s, color 0.1s;
+}
+.tab:hover .tab-close,
+.tab.active .tab-close {
+  color: var(--text-faint);
+}
+.tab-close:hover {
+  background: var(--bg4);
+  color: var(--text) !important;
+}
+/* On single-tab, dim the close button (server rejects close anyway) */
+.tab-bar[data-tab-count="1"] .tab-close { opacity: 0.2; cursor: not-allowed; }
+
+/* ── New-tab (+) button ──────────────────────────────────────────────────── */
+.btn-new-tab {
+  flex-shrink: 0;
+  align-self: center;
+  margin-bottom: 2px;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  margin-left: 6px;
+  padding: 0;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.btn-new-tab:hover {
+  background: var(--bg3);
+  border-color: var(--border);
+  color: var(--text);
+}
 
 /* ── Buttons ─────────────────────────────────────────────────────────────── */
 .btn {
@@ -287,14 +447,9 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
   max-width: 848px;
   width: 100%;
   margin: 0 auto;
-  /* override max-width clipping from parent */
   align-self: stretch;
 }
-/* let input bar span full width with internal max */
-#input-bar {
-  max-width: none;
-}
-#input-bar > * { /* keep inner content constrained */ }
+#input-bar { max-width: none; }
 
 .prompt-input {
   flex: 1;
@@ -372,6 +527,99 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 }
 .dialog-textarea:focus { border-color: var(--accent); }
 
+/* ── Session browser ─────────────────────────────────────────────────────── */
+.session-browser-box {
+  /* Override default dialog-box sizing */
+  max-width: 640px !important;
+  width: 92vw !important;
+  padding: 0 !important;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  max-height: 78vh;
+}
+.session-browser-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.session-browser-header .dialog-title { margin-bottom: 0; }
+.session-search {
+  margin: 12px 16px 8px;
+  width: calc(100% - 32px);
+  flex-shrink: 0;
+}
+.session-list {
+  overflow-y: auto;
+  flex: 1;
+  padding: 4px 8px 12px;
+}
+.session-list::-webkit-scrollbar { width: 6px; }
+.session-list::-webkit-scrollbar-track { background: transparent; }
+.session-list::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+
+.session-list-loading,
+.session-list-empty {
+  text-align: center;
+  padding: 36px 20px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.session-list-loading { display: flex; align-items: center; justify-content: center; gap: 8px; }
+
+.session-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.1s, border-color 0.1s;
+  margin-bottom: 2px;
+}
+.session-item:hover {
+  background: var(--bg3);
+  border-color: var(--border);
+}
+.session-item-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.session-item-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.session-item-date {
+  font-size: 11px;
+  color: var(--text-faint);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.session-item-meta {
+  display: flex;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.session-item-preview {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ── Toast notifications ─────────────────────────────────────────────────── */
 #toast-container {
   position: fixed; bottom: 90px; right: 20px;
@@ -389,6 +637,30 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 .toast-warning { background: #3a2800; border-color: var(--warning); color: var(--warning); }
 .toast-error   { background: var(--error-dim); border-color: var(--error); color: var(--error); }
 @keyframes toast-in { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: none; } }
+
+/* ── Session item delete button ──────────────────────────────────────────── */
+.session-item-delete {
+  flex-shrink: 0;
+  opacity: 0;
+  pointer-events: none;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--error);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 3px 5px;
+  transition: opacity 0.1s, background 0.1s, border-color 0.1s;
+}
+.session-item:hover .session-item-delete {
+  opacity: 1;
+  pointer-events: auto;
+}
+.session-item-delete:hover {
+  background: var(--error-dim);
+  border-color: var(--error);
+}
 
 /* ── Highlight.js overrides ──────────────────────────────────────────────── */
 .hljs { background: transparent !important; padding: 0 !important; }

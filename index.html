@@ -11,13 +11,12 @@
       <header id="header">
         <div class="header-left">
           <span class="logo">π</span>
-          <span class="logo-text">pi-remote-web-ui</span>
+          <span class="logo-text">pi</span>
           <span id="status-dot" class="status-dot disconnected" title="Disconnected"></span>
           <span id="status-text" class="status-text">Connecting…</span>
         </div>
-        <div class="header-right">
-          <button id="btn-new" class="btn btn-ghost" title="New session">＋ New</button>
-        </div>
+        <!-- Tab bar: filled dynamically by JS -->
+        <div id="tab-bar" class="tab-bar"></div>
       </header>
 
       <div id="messages" class="messages"></div>
@@ -37,6 +36,20 @@
         ></textarea>
         <button id="btn-send" class="btn btn-primary" title="Send (Enter)">Send</button>
         <button id="btn-abort" class="btn btn-danger hidden" title="Abort">Stop</button>
+      </div>
+    </div>
+
+    <!-- Session browser overlay -->
+    <div id="session-browser-overlay" class="dialog-overlay hidden">
+      <div class="dialog-box session-browser-box">
+        <div class="session-browser-header">
+          <span class="dialog-title">Open Session</span>
+          <button id="session-browser-close" class="btn btn-ghost" style="padding:4px 8px">✕</button>
+        </div>
+        <input id="session-search" class="dialog-input session-search" placeholder="Filter sessions…" autocomplete="off" />
+        <div id="session-list" class="session-list">
+          <div class="session-list-loading">Loading…</div>
+        </div>
       </div>
     </div>
 

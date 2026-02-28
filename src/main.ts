@@ -63,12 +63,39 @@ interface ExtUIRequest {
   statusText?: string;
 }
 
+interface TabInfo {
+  tabId: string;
+  name: string;
+}
+
+interface SessionBrowserItem {
+  id: string;
+  path: string;
+  name?: string;
+  cwd: string;
+  created: string;
+  modified: string;
+  messageCount: number;
+  firstMessage: string;
+}
+
 // ── State ─────────────────────────────────────────────────────────────────────
 const state = {
   connected: false,
   streaming: false,
   items: [] as ConversationItem[],
   dialog: null as ExtUIRequest | null,
+  // Tab state
+  tabs: [] as TabInfo[],
+  activeTabId: null as string | null,
+  // Session browser
+  sessionBrowserOpen: false,
+  sessionBrowserSessions: null as SessionBrowserItem[] | null, // null = loading
+  sessionBrowserFilter: "",
+  // Set to true only when opening a saved session; consumed by handleStateSync
+  scrollToBottomOnSync: false,
+  // Persisted scroll position per tab, keyed by tabId
+  tabScrollPositions: {} as Record<string, number>,
 };
 
 let currentAssistantItem: AssistantItem | null = null;
@@ -82,9 +109,13 @@ const $indicator = document.getElementById("streaming-indicator")!;
 const $input     = document.getElementById("prompt-input") as HTMLTextAreaElement;
 const $btnSend   = document.getElementById("btn-send")!;
 const $btnAbort  = document.getElementById("btn-abort")!;
-const $btnNew    = document.getElementById("btn-new")!;
-const $overlay   = document.getElementById("dialog-overlay")!;
-const $dialogBox = document.getElementById("dialog-box")!;
+const $overlay         = document.getElementById("dialog-overlay")!;
+const $dialogBox       = document.getElementById("dialog-box")!;
+const $tabBar          = document.getElementById("tab-bar")!;
+const $sessionBrowserOverlay = document.getElementById("session-browser-overlay")!;
+const $sessionSearch   = document.getElementById("session-search") as HTMLInputElement;
+const $sessionList     = document.getElementById("session-list")!;
+const $sessionBrowserClose = document.getElementById("session-browser-close")!;
 
 // Toast container (added to body)
 const $toastContainer = document.createElement("div");
@@ -129,8 +160,12 @@ function send(cmd: object) {
 
 // ── State sync handler ────────────────────────────────────────────────────────
 // Rebuilds the conversation from the full message array sent on connect or
-// after a new_session command.
+// after a switch_session / new_session command.
 function handleStateSync(data: Record<string, unknown>) {
+  // Ignore stale syncs for tabs we're no longer viewing.
+  const tabId = data.tabId as string | undefined;
+  if (tabId && tabId !== state.activeTabId) return;
+
   const messages = data.messages as Array<Record<string, unknown>> | undefined;
   state.items = [];
   currentAssistantItem = null;
@@ -193,14 +228,37 @@ function handleStateSync(data: Record<string, unknown>) {
 
   renderMessages();
   updateStatus();
+
+  if (state.scrollToBottomOnSync) {
+    // Opening a saved session — jump to the bottom.
+    state.scrollToBottomOnSync = false;
+    requestAnimationFrame(() => { $messages.scrollTop = $messages.scrollHeight; });
+  } else if (state.activeTabId && state.tabScrollPositions[state.activeTabId] !== undefined) {
+    // Restore the saved scroll position for this tab.
+    const saved = state.tabScrollPositions[state.activeTabId];
+    requestAnimationFrame(() => { $messages.scrollTop = saved; });
+  }
 }
 
 // ── RPC event handler ─────────────────────────────────────────────────────────
 function handleServerEvent(event: Record<string, unknown>) {
   switch (event.type) {
+    case "tabs_update": {
+      state.tabs = (event.tabs as TabInfo[]) ?? [];
+      // If we don't have an active tab yet, default to the first one.
+      if (!state.activeTabId && state.tabs.length > 0) {
+        state.activeTabId = state.tabs[0].tabId;
+      }
+      renderTabs();
+      return;
+    }
+
     case "state_sync": {
+      // Update our active tab from the sync's tabId (server may have redirected us).
+      if (event.tabId) state.activeTabId = event.tabId as string;
       handleStateSync(event);
-      return; // already rendered
+      renderTabs(); // re-render tabs so active highlight is correct
+      return;
     }
 
     case "agent_start": {
@@ -296,6 +354,12 @@ function handleServerEvent(event: Record<string, unknown>) {
       break;
     }
 
+    case "sessions_list": {
+      state.sessionBrowserSessions = (event.sessions as SessionBrowserItem[]) ?? [];
+      renderSessionBrowser();
+      return;
+    }
+
     case "extension_error": {
       showToast(`Extension error: ${event.error as string}`, "error");
       break;
@@ -314,6 +378,210 @@ function findToolBlock(callId: string, mutate: (b: ToolBlock) => void) {
       if (block) { mutate(block); return; }
     }
   }
+}
+
+// ── Tab rendering ─────────────────────────────────────────────────────────────
+function renderTabs() {
+  $tabBar.innerHTML = "";
+  $tabBar.dataset.tabCount = String(state.tabs.length);
+
+  // ── Find-sessions button (left of all tabs) ──────────────────────────────
+  const $find = document.createElement("button");
+  $find.className = "btn-find-sessions";
+  $find.textContent = "⊞";
+  $find.title = "Browse saved sessions";
+  $find.addEventListener("click", openSessionBrowser);
+  $tabBar.appendChild($find);
+
+  // ── Individual tabs ──────────────────────────────────────────────────────
+  for (const tab of state.tabs) {
+    const isActive = tab.tabId === state.activeTabId;
+
+    const $tab = document.createElement("div");
+    $tab.className = "tab" + (isActive ? " active" : "");
+    $tab.title = tab.name;
+
+    const $label = document.createElement("span");
+    $label.className = "tab-label";
+    $label.textContent = tab.name;
+
+    const $close = document.createElement("button");
+    $close.className = "tab-close";
+    $close.textContent = "✕";
+    $close.title = "Close tab";
+    $close.addEventListener("click", (e) => {
+      e.stopPropagation();
+      send({ type: "close_tab", tabId: tab.tabId });
+    });
+
+    $tab.appendChild($label);
+    $tab.appendChild($close);
+
+    // Left-click → switch to this tab
+    $tab.addEventListener("click", () => {
+      if (tab.tabId !== state.activeTabId) {
+        // Save scroll position for the tab we're leaving.
+        if (state.activeTabId) {
+          state.tabScrollPositions[state.activeTabId] = $messages.scrollTop;
+        }
+        state.activeTabId = tab.tabId;
+        send({ type: "switch_session", tabId: tab.tabId });
+        renderTabs(); // optimistic active highlight while waiting for state_sync
+      }
+    });
+
+    // Middle-click → close tab
+    $tab.addEventListener("auxclick", (e) => {
+      if ((e as MouseEvent).button === 1) {
+        e.preventDefault();
+        send({ type: "close_tab", tabId: tab.tabId });
+      }
+    });
+
+    $tabBar.appendChild($tab);
+  }
+
+  // ── New-tab (+) button (right of all tabs) ───────────────────────────────
+  const $newTab = document.createElement("button");
+  $newTab.className = "btn-new-tab";
+  $newTab.textContent = "+";
+  $newTab.title = "New session";
+  $newTab.addEventListener("click", () => {
+    send({ type: "new_session" });
+  });
+  $tabBar.appendChild($newTab);
+}
+
+// ── Session browser ───────────────────────────────────────────────────────────
+function openSessionBrowser() {
+  state.sessionBrowserOpen = true;
+  state.sessionBrowserSessions = null; // show loading state
+  state.sessionBrowserFilter = "";
+  $sessionSearch.value = "";
+  $sessionBrowserOverlay.classList.remove("hidden");
+  renderSessionBrowser();
+  // Request the list from the server
+  send({ type: "list_sessions" });
+  // Focus the search box once the list arrives
+  setTimeout(() => $sessionSearch.focus(), 50);
+}
+
+function closeSessionBrowser() {
+  state.sessionBrowserOpen = false;
+  $sessionBrowserOverlay.classList.add("hidden");
+}
+
+function renderSessionBrowser() {
+  $sessionList.innerHTML = "";
+
+  if (state.sessionBrowserSessions === null) {
+    // Loading state
+    const el = document.createElement("div");
+    el.className = "session-list-loading";
+    const spinner = document.createElement("span");
+    spinner.className = "spinner";
+    el.appendChild(spinner);
+    el.appendChild(document.createTextNode(" Loading sessions…"));
+    $sessionList.appendChild(el);
+    return;
+  }
+
+  const filter = state.sessionBrowserFilter.toLowerCase().trim();
+  const visible = state.sessionBrowserSessions.filter((s) => {
+    if (!filter) return true;
+    const name = (s.name ?? s.id).toLowerCase();
+    const preview = s.firstMessage.toLowerCase();
+    const cwd = s.cwd.toLowerCase();
+    return name.includes(filter) || preview.includes(filter) || cwd.includes(filter);
+  });
+
+  if (visible.length === 0) {
+    const el = document.createElement("div");
+    el.className = "session-list-empty";
+    el.textContent = state.sessionBrowserSessions.length === 0
+      ? "No saved sessions found."
+      : "No sessions match your filter.";
+    $sessionList.appendChild(el);
+    return;
+  }
+
+  for (const s of visible) {
+    const $item = document.createElement("div");
+    $item.className = "session-item";
+
+    // Top row: name + delete button
+    const $top = document.createElement("div");
+    $top.className = "session-item-top";
+
+    const $name = document.createElement("span");
+    $name.className = "session-item-name";
+    $name.textContent = s.name ?? truncateId(s.id);
+
+    const $del = document.createElement("button");
+    $del.className = "session-item-delete";
+    $del.title = "Delete session";
+    $del.innerHTML = "🗑";
+    $del.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (window.confirm("Are you sure you want to delete this session?\n\n" + (s.name ?? s.id))) {
+        send({ type: "delete_session", sessionPath: s.path });
+        // Optimistically remove from list while server responds
+        state.sessionBrowserSessions = (state.sessionBrowserSessions ?? []).filter(
+          (x) => x.path !== s.path
+        );
+        renderSessionBrowser();
+      }
+    });
+
+    $top.appendChild($name);
+    $top.appendChild($del);
+
+    // Meta row: timestamp · message count · cwd
+    const $meta = document.createElement("div");
+    $meta.className = "session-item-meta";
+    const cwdShort = s.cwd.replace(/^.*\/([^/]+)$/, "$1") || s.cwd;
+    const relDate = formatRelativeDate(new Date(s.modified));
+    const msgs = `${s.messageCount} message${s.messageCount !== 1 ? "s" : ""}`;
+
+    const $dateSpan = document.createElement("span");
+    $dateSpan.textContent = relDate;
+    $dateSpan.title = new Date(s.modified).toLocaleString();
+    $meta.appendChild($dateSpan);
+    $meta.appendChild(document.createTextNode(` · ${msgs} · ${cwdShort}`));
+
+    // Preview: first message text
+    const $preview = document.createElement("div");
+    $preview.className = "session-item-preview";
+    $preview.textContent = s.firstMessage || "(empty)";
+
+    $item.appendChild($top);
+    $item.appendChild($meta);
+    if (s.firstMessage) $item.appendChild($preview);
+
+    $item.addEventListener("click", () => {
+      state.scrollToBottomOnSync = true;
+      send({ type: "open_session", sessionPath: s.path });
+      closeSessionBrowser();
+    });
+
+    $sessionList.appendChild($item);
+  }
+}
+
+function truncateId(id: string): string {
+  return id.length > 16 ? id.slice(0, 8) + "…" + id.slice(-4) : id;
+}
+
+function formatRelativeDate(d: Date): string {
+  const diff = Date.now() - d.getTime();
+  const mins  = Math.floor(diff / 60_000);
+  const hours = Math.floor(diff / 3_600_000);
+  const days  = Math.floor(diff / 86_400_000);
+  if (mins  <  1) return "just now";
+  if (mins  < 60) return `${mins}m ago`;
+  if (hours < 24) return `${hours}h ago`;
+  if (days  <  7) return `${days}d ago`;
+  return d.toLocaleDateString();
 }
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
@@ -586,11 +854,6 @@ function sendPrompt() {
 
 $btnSend.addEventListener("click", sendPrompt);
 $btnAbort.addEventListener("click", () => send({ type: "abort" }));
-$btnNew.addEventListener("click", () => {
-  // Ask the server to start a new session (shared across all tabs).
-  // The server will broadcast a state_sync event to every connected client.
-  send({ type: "new_session" });
-});
 
 $input.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
@@ -605,7 +868,7 @@ function autoResizeInput() {
   $input.style.height = Math.min($input.scrollHeight, 200) + "px";
 }
 
-// Dismiss dialog overlay on backdrop click
+// Dismiss extension UI dialog on backdrop click
 $overlay.addEventListener("click", (e) => {
   if (e.target === $overlay && state.dialog) {
     send({ type: "extension_ui_response", id: state.dialog.id, cancelled: true });
@@ -614,7 +877,26 @@ $overlay.addEventListener("click", (e) => {
   }
 });
 
+// Session browser: close button, backdrop click, Escape key, search input
+$sessionBrowserClose.addEventListener("click", closeSessionBrowser);
+
+$sessionBrowserOverlay.addEventListener("click", (e) => {
+  if (e.target === $sessionBrowserOverlay) closeSessionBrowser();
+});
+
+$sessionSearch.addEventListener("input", () => {
+  state.sessionBrowserFilter = $sessionSearch.value;
+  renderSessionBrowser();
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && state.sessionBrowserOpen) {
+    closeSessionBrowser();
+  }
+});
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 updateStatus();
 renderMessages();
+renderTabs();
 connect();
