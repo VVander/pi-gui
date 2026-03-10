@@ -4,10 +4,9 @@
  * Binds to 127.0.0.1:8080 only.  Access is via SSH port-forwarding:
  *   ssh -L 8080:localhost:8080 user@your-vps
  *
- * Uses AgentSession directly (per pi SDK docs) instead of spawning
- * `pi --mode rpc` subprocesses.  A single AgentSession is shared
- * across all WebSocket connections — every connected tab observes the
- * same conversation in real time.
+ * Supports multiple named sessions ("tabs").  Each WebSocket client tracks
+ * which tab it is currently viewing; session events are only forwarded to
+ * clients watching the corresponding tab.
  */
 
 import * as http from "http";
@@ -21,6 +20,7 @@ import {
   AuthStorage,
   ModelRegistry,
   SessionManager,
+  type SessionInfo,
 } from "@mariozechner/pi-coding-agent";
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
 
@@ -103,7 +103,34 @@ type PendingUIRequest = {
 
 const pendingExtensionRequests = new Map<string, PendingUIRequest>();
 
-function broadcast(wss: WebSocketServer, msg: unknown) {
+// ── Tab management ────────────────────────────────────────────────────────────
+
+interface TabEntry {
+  tabId: string;
+  name: string;
+  session: AgentSession;
+}
+
+// Ordered list of tab IDs (creation order)
+const tabOrder: string[] = [];
+// tabId → TabEntry
+const tabs = new Map<string, TabEntry>();
+// WebSocket → tabId the client is currently viewing
+const clientActiveTab = new Map<WebSocket, string>();
+// Counter for default tab names
+let tabCounter = 0;
+
+function getTabsList(): Array<{ tabId: string; name: string }> {
+  return tabOrder
+    .filter((id) => tabs.has(id))
+    .map((id) => {
+      const t = tabs.get(id)!;
+      return { tabId: t.tabId, name: t.name };
+    });
+}
+
+/** Send to all connected clients regardless of active tab. */
+function broadcastAll(wss: WebSocketServer, msg: unknown) {
   const data = JSON.stringify(msg);
   for (const client of wss.clients) {
     if (client.readyState === WebSocket.OPEN) {
@@ -111,6 +138,110 @@ function broadcast(wss: WebSocketServer, msg: unknown) {
     }
   }
 }
+
+/** Send only to clients currently viewing the given tab. */
+function broadcastToTabViewers(wss: WebSocketServer, tabId: string, msg: unknown) {
+  const data = JSON.stringify(msg);
+  for (const client of wss.clients) {
+    if (
+      client.readyState === WebSocket.OPEN &&
+      clientActiveTab.get(client) === tabId
+    ) {
+      client.send(data);
+    }
+  }
+}
+
+/** Send the current tabs list to every connected client. */
+function broadcastTabsList(wss: WebSocketServer) {
+  broadcastAll(wss, { type: "tabs_update", tabs: getTabsList() });
+}
+
+/** Send a state_sync for the given tab to a single WebSocket client. */
+function sendStateSync(ws: WebSocket, entry: TabEntry) {
+  ws.send(
+    JSON.stringify({
+      type: "state_sync",
+      tabId: entry.tabId,
+      messages: entry.session.messages,
+      streaming: entry.session.isStreaming,
+      model: entry.session.model?.id,
+      sessionId: entry.session.sessionId,
+    })
+  );
+}
+
+/** Create a new tab (and its underlying AgentSession).
+ *  Pass `sessionPath` to resume an existing session file. */
+async function createTab(
+  wss: WebSocketServer,
+  authStorage: AuthStorage,
+  modelRegistry: ModelRegistry,
+  name?: string,
+  sessionPath?: string,
+): Promise<TabEntry> {
+  const tabId = crypto.randomUUID();
+  tabCounter++;
+
+  const sessionManager = sessionPath
+    ? SessionManager.open(sessionPath)
+    : SessionManager.create(process.cwd());
+
+  const { session } = await createAgentSession({
+    sessionManager,
+    authStorage,
+    modelRegistry,
+  });
+
+  // Derive a display name: prefer explicit arg, then session's own name, else counter
+  const displayName = name ?? (sessionPath ? (sessionManager.getSessionName() ?? `Session ${tabCounter}`) : `Session ${tabCounter}`);
+
+  // Forward all session events only to clients currently viewing this tab.
+  session.subscribe((event) => {
+    broadcastToTabViewers(wss, tabId, event);
+  });
+
+  await session.bindExtensions({
+    uiContext: createExtensionUIContext(wss) as any,
+    onError: (err) => {
+      broadcastToTabViewers(wss, tabId, {
+        type: "extension_error",
+        extensionPath: err.extensionPath,
+        event: err.event,
+        error: err.error,
+      });
+    },
+  });
+
+  const entry: TabEntry = { tabId, name: displayName, session };
+  tabs.set(tabId, entry);
+  tabOrder.push(tabId);
+  return entry;
+}
+
+/** Close a tab.  Returns the tabId clients should switch to, or null if none left. */
+function closeTab(tabId: string): string | null {
+  const entry = tabs.get(tabId);
+  if (!entry) return null;
+
+  // Refuse to close the last remaining tab.
+  if (tabs.size <= 1) return tabId;
+
+  // Determine replacement tab for clients that were watching this one.
+  const idx = tabOrder.indexOf(tabId);
+  const remainingOrder = tabOrder.filter((id) => id !== tabId && tabs.has(id));
+  const replacementId = remainingOrder[Math.max(0, idx - 1)] ?? remainingOrder[0] ?? null;
+
+  // Dispose session and remove from tracking.
+  entry.session.dispose();
+  tabs.delete(tabId);
+  const orderIdx = tabOrder.indexOf(tabId);
+  if (orderIdx !== -1) tabOrder.splice(orderIdx, 1);
+
+  return replacementId;
+}
+
+// ── Extension UI context factory ──────────────────────────────────────────────
 
 function createExtensionUIContext(wss: WebSocketServer) {
   function createDialogPromise<T>(
@@ -144,12 +275,12 @@ function createExtensionUIContext(wss: WebSocketServer) {
           cleanup();
           resolve(parseResponse(response));
         },
-        reject: (err) => {
+        reject: (_err) => {
           cleanup();
           resolve(defaultValue);
         },
       });
-      broadcast(wss, { type: "extension_ui_request", id, ...request });
+      broadcastAll(wss, { type: "extension_ui_request", id, ...request });
     });
   }
 
@@ -203,7 +334,7 @@ function createExtensionUIContext(wss: WebSocketServer) {
               : undefined,
       ),
     notify(message: string, type?: "info" | "warning" | "error") {
-      broadcast(wss, {
+      broadcastAll(wss, {
         type: "extension_ui_request",
         id: crypto.randomUUID(),
         method: "notify",
@@ -215,7 +346,7 @@ function createExtensionUIContext(wss: WebSocketServer) {
       return () => {};
     },
     setStatus(key: string, text: string | undefined) {
-      broadcast(wss, {
+      broadcastAll(wss, {
         type: "extension_ui_request",
         id: crypto.randomUUID(),
         method: "setStatus",
@@ -232,7 +363,7 @@ function createExtensionUIContext(wss: WebSocketServer) {
       options?: { placement?: string },
     ) {
       if (content === undefined || Array.isArray(content)) {
-        broadcast(wss, {
+        broadcastAll(wss, {
           type: "extension_ui_request",
           id: crypto.randomUUID(),
           method: "setWidget",
@@ -251,60 +382,35 @@ function createExtensionUIContext(wss: WebSocketServer) {
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 async function main() {
-  console.log("Initialising AgentSession…");
+  console.log("Initialising pi-remote-web-ui…");
 
   const authStorage = AuthStorage.create();
   const modelRegistry = new ModelRegistry(authStorage);
-
-  const { session } = await createAgentSession({
-    sessionManager: SessionManager.create(process.cwd()),
-    authStorage,
-    modelRegistry,
-  });
-
-  console.log(
-    `AgentSession ready (model: ${session.model?.id ?? "default"}, session: ${session.sessionId})`,
-  );
 
   // ── HTTP + WebSocket server ───────────────────────────────────────────────
   const server = http.createServer(serveStatic);
   const wss = new WebSocketServer({ server, path: "/ws" });
 
-  // Subscribe to all agent events and broadcast to every connected client.
-  session.subscribe((event) => {
-    broadcast(wss, event);
-  });
-
-  // Bind extension UI context so extensions can show dialogs, notifications, etc.
-  await session.bindExtensions({
-    uiContext: createExtensionUIContext(wss) as any,
-    onError: (err) => {
-      broadcast(wss, {
-        type: "extension_error",
-        extensionPath: err.extensionPath,
-        event: err.event,
-        error: err.error,
-      });
-    },
-  });
+  // Create the first tab now that wss exists (needed for extension UI context).
+  const initialTab = await createTab(wss, authStorage, modelRegistry, "Session 1");
+  console.log(
+    `Initial tab ready (model: ${initialTab.session.model?.id ?? "default"}, session: ${initialTab.session.sessionId})`
+  );
 
   // ── WebSocket connection handling ─────────────────────────────────────────
   wss.on("connection", (ws: WebSocket) => {
     console.log(
-      `[${new Date().toISOString()}] Client connected (${wss.clients.size} total)`,
+      `[${new Date().toISOString()}] Client connected (${wss.clients.size} total)`
     );
 
-    // Send current conversation state so the new tab catches up.
-    const messages = session.messages;
-    ws.send(
-      JSON.stringify({
-        type: "state_sync",
-        messages,
-        streaming: session.isStreaming,
-        model: session.model?.id,
-        sessionId: session.sessionId,
-      }),
-    );
+    // Assign the new client to the first tab.
+    const firstTabId = tabOrder[0];
+    clientActiveTab.set(ws, firstTabId);
+
+    // Send the current tab list and current session state.
+    ws.send(JSON.stringify({ type: "tabs_update", tabs: getTabsList() }));
+    const firstEntry = tabs.get(firstTabId)!;
+    sendStateSync(ws, firstEntry);
 
     // ── Client → AgentSession ─────────────────────────────────────────────
     ws.on("message", async (data) => {
@@ -316,18 +422,21 @@ async function main() {
       }
 
       try {
+        // Resolve the session for the tab this client is currently viewing.
+        const activeTabId = clientActiveTab.get(ws) ?? tabOrder[0];
+        const activeEntry = tabs.get(activeTabId);
+
         switch (cmd.type) {
           case "prompt": {
             const text = cmd.message as string;
-            if (!text) break;
+            if (!text || !activeEntry) break;
+            const session = activeEntry.session;
             if (session.isStreaming) {
               await session.prompt(text, {
                 streamingBehavior:
                   (cmd.streamingBehavior as "steer" | "followUp") ?? "followUp",
               });
             } else {
-              // Don't await — prompt is async and we don't want to block the ws handler.
-              // Events stream via the subscription above.
               session.prompt(text).catch((err) => {
                 console.error("[prompt error]", err);
               });
@@ -336,20 +445,191 @@ async function main() {
           }
 
           case "abort":
-            await session.abort();
+            if (activeEntry) await activeEntry.session.abort();
             break;
 
-          case "new_session":
-            await session.newSession();
-            // Notify all clients that the session was reset
-            broadcast(wss, {
-              type: "state_sync",
-              messages: session.messages,
-              streaming: session.isStreaming,
-              model: session.model?.id,
-              sessionId: session.sessionId,
-            });
+          case "new_session": {
+            // Create a brand-new tab.
+            const newEntry = await createTab(wss, authStorage, modelRegistry);
+            // Switch this client to the new tab.
+            clientActiveTab.set(ws, newEntry.tabId);
+            // Tell everyone about the updated tab list.
+            broadcastTabsList(wss);
+            // Send fresh state to this client.
+            sendStateSync(ws, newEntry);
             break;
+          }
+
+          case "switch_session": {
+            const targetTabId = cmd.tabId as string;
+            const targetEntry = tabs.get(targetTabId);
+            if (!targetEntry) break;
+            clientActiveTab.set(ws, targetTabId);
+            sendStateSync(ws, targetEntry);
+            break;
+          }
+
+          case "close_tab": {
+            const targetTabId = cmd.tabId as string;
+            if (!tabs.has(targetTabId)) break;
+            // Don't close the last tab.
+            if (tabs.size <= 1) break;
+
+            const replacementId = closeTab(targetTabId);
+
+            // Tell everyone the tab list changed.
+            broadcastTabsList(wss);
+
+            // Any client that was viewing the closed tab must be redirected.
+            for (const client of wss.clients) {
+              if (
+                client.readyState === WebSocket.OPEN &&
+                clientActiveTab.get(client) === targetTabId
+              ) {
+                const fallback = replacementId
+                  ? tabs.get(replacementId)
+                  : tabs.get(tabOrder[0]);
+                if (fallback) {
+                  clientActiveTab.set(client, fallback.tabId);
+                  sendStateSync(client, fallback);
+                }
+              }
+            }
+            break;
+          }
+
+          case "list_sessions": {
+            // Gather all persisted sessions and filter out those already open.
+            const openIds = new Set(
+              Array.from(tabs.values()).map((t) => t.session.sessionId)
+            );
+            let allSessions: SessionInfo[] = [];
+            try {
+              allSessions = await SessionManager.listAll();
+            } catch (err) {
+              console.error("[list_sessions error]", err);
+            }
+            // Exclude currently-open sessions and sort newest first.
+            const available = allSessions
+              .filter((s) => !openIds.has(s.id))
+              .sort((a, b) => b.modified.getTime() - a.modified.getTime());
+            // Send only to the requesting client.
+            ws.send(
+              JSON.stringify({
+                type: "sessions_list",
+                sessions: available.map((s) => ({
+                  id: s.id,
+                  path: s.path,
+                  name: s.name,
+                  cwd: s.cwd,
+                  created: s.created.toISOString(),
+                  modified: s.modified.toISOString(),
+                  messageCount: s.messageCount,
+                  firstMessage: s.firstMessage,
+                })),
+              })
+            );
+            break;
+          }
+
+          case "open_session": {
+            const sessionPath = cmd.sessionPath as string;
+            if (!sessionPath) break;
+            // Don't open the same session twice.
+            const allSessions = await SessionManager.listAll();
+            const info = allSessions.find((s) => s.path === sessionPath);
+            if (!info) break;
+            // Check if already open.
+            const alreadyOpen = Array.from(tabs.values()).find(
+              (t) => t.session.sessionId === info.id
+            );
+            if (alreadyOpen) {
+              // Just switch to it.
+              clientActiveTab.set(ws, alreadyOpen.tabId);
+              sendStateSync(ws, alreadyOpen);
+              break;
+            }
+            // Open the session as a new tab.
+            const newEntry = await createTab(
+              wss,
+              authStorage,
+              modelRegistry,
+              undefined,
+              sessionPath,
+            );
+            clientActiveTab.set(ws, newEntry.tabId);
+            broadcastTabsList(wss);
+            sendStateSync(ws, newEntry);
+            break;
+          }
+
+          case "delete_session": {
+            const sessionPath = cmd.sessionPath as string;
+            if (!sessionPath) break;
+
+            // Find the session info so we can match it to an open tab.
+            let allForDelete: SessionInfo[] = [];
+            try { allForDelete = await SessionManager.listAll(); } catch { /* ignore */ }
+            const deleteInfo = allForDelete.find((s) => s.path === sessionPath);
+
+            // Close the tab if this session is currently open (and not the last tab).
+            if (deleteInfo) {
+              const openTab = Array.from(tabs.values()).find(
+                (t) => t.session.sessionId === deleteInfo.id
+              );
+              if (openTab && tabs.size > 1) {
+                const replacementId = closeTab(openTab.tabId);
+                broadcastTabsList(wss);
+                for (const client of wss.clients) {
+                  if (
+                    client.readyState === WebSocket.OPEN &&
+                    clientActiveTab.get(client) === openTab.tabId
+                  ) {
+                    const fallback = replacementId
+                      ? tabs.get(replacementId)
+                      : tabs.get(tabOrder[0]);
+                    if (fallback) {
+                      clientActiveTab.set(client, fallback.tabId);
+                      sendStateSync(client, fallback);
+                    }
+                  }
+                }
+              }
+            }
+
+            // Delete the session file.
+            try {
+              await fs.promises.unlink(sessionPath);
+            } catch (err) {
+              console.error("[delete_session] unlink error:", err);
+            }
+
+            // Re-send the updated sessions list to the requesting client.
+            const openIdsAfter = new Set(
+              Array.from(tabs.values()).map((t) => t.session.sessionId)
+            );
+            let updatedSessions: SessionInfo[] = [];
+            try { updatedSessions = await SessionManager.listAll(); } catch { /* ignore */ }
+            const availableAfter = updatedSessions
+              .filter((s) => !openIdsAfter.has(s.id))
+              .sort((a, b) => b.modified.getTime() - a.modified.getTime());
+            ws.send(
+              JSON.stringify({
+                type: "sessions_list",
+                sessions: availableAfter.map((s) => ({
+                  id: s.id,
+                  path: s.path,
+                  name: s.name,
+                  cwd: s.cwd,
+                  created: s.created.toISOString(),
+                  modified: s.modified.toISOString(),
+                  messageCount: s.messageCount,
+                  firstMessage: s.firstMessage,
+                })),
+              })
+            );
+            break;
+          }
 
           case "extension_ui_response": {
             const id = cmd.id as string;
@@ -371,8 +651,9 @@ async function main() {
     });
 
     ws.on("close", () => {
+      clientActiveTab.delete(ws);
       console.log(
-        `[${new Date().toISOString()}] Client disconnected (${wss.clients.size} total)`,
+        `[${new Date().toISOString()}] Client disconnected (${wss.clients.size} total)`
       );
     });
 
@@ -384,7 +665,7 @@ async function main() {
   server.listen(PORT, HOST, () => {
     console.log(`pi-remote-web-ui listening on http://${HOST}:${PORT}`);
     console.log(
-      `Access via SSH tunnel: ssh -L ${PORT}:localhost:${PORT} user@your-vps`,
+      `Access via SSH tunnel: ssh -L ${PORT}:localhost:${PORT} user@your-vps`
     );
     console.log(`Then open: http://localhost:${PORT}`);
   });
@@ -393,7 +674,9 @@ async function main() {
   for (const sig of ["SIGINT", "SIGTERM"] as const) {
     process.on(sig, () => {
       console.log(`\n${sig} received, shutting down…`);
-      session.dispose();
+      for (const entry of tabs.values()) {
+        entry.session.dispose();
+      }
       server.close();
       process.exit(0);
     });
