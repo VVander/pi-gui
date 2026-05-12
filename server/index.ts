@@ -23,6 +23,7 @@ import {
   SessionManager,
 } from "@mariozechner/pi-coding-agent";
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
+import type { ImageContent } from "@mariozechner/pi-ai";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.resolve(__dirname, "../dist");
@@ -110,6 +111,29 @@ function broadcast(wss: WebSocketServer, msg: unknown) {
       client.send(data);
     }
   }
+}
+
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10 MB decoded
+const ALLOWED_IMAGE_MIME = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+]);
+
+function normaliseImages(raw: unknown): ImageContent[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ImageContent[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry as { data?: unknown; mimeType?: unknown };
+    if (typeof e.data !== "string" || typeof e.mimeType !== "string") continue;
+    if (!ALLOWED_IMAGE_MIME.has(e.mimeType)) continue;
+    // Approximate decoded size; base64 inflates by ~4/3.
+    if ((e.data.length * 3) / 4 > MAX_IMAGE_BYTES) continue;
+    out.push({ type: "image", data: e.data, mimeType: e.mimeType });
+  }
+  return out;
 }
 
 function createExtensionUIContext(wss: WebSocketServer) {
@@ -318,17 +342,20 @@ async function main() {
       try {
         switch (cmd.type) {
           case "prompt": {
-            const text = cmd.message as string;
-            if (!text) break;
+            const text = (cmd.message as string) ?? "";
+            const images = normaliseImages(cmd.images);
+            if (!text && images.length === 0) break;
+            const imageOpt = images.length > 0 ? { images } : {};
             if (session.isStreaming) {
               await session.prompt(text, {
+                ...imageOpt,
                 streamingBehavior:
                   (cmd.streamingBehavior as "steer" | "followUp") ?? "followUp",
               });
             } else {
               // Don't await — prompt is async and we don't want to block the ws handler.
               // Events stream via the subscription above.
-              session.prompt(text).catch((err) => {
+              session.prompt(text, imageOpt).catch((err) => {
                 console.error("[prompt error]", err);
               });
             }

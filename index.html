@@ -27,7 +27,17 @@
         <span class="spinner"></span> Working…
       </div>
 
+      <div id="attachment-strip" class="attachment-strip hidden"></div>
+
       <div id="input-bar" class="input-bar">
+        <input
+          type="file"
+          id="file-input"
+          class="hidden"
+          accept="image/png,image/jpeg,image/gif,image/webp"
+          multiple
+        />
+        <button id="btn-attach" class="btn btn-ghost btn-attach" title="Attach image" aria-label="Attach image">📎</button>
         <textarea
           id="prompt-input"
           class="prompt-input"
