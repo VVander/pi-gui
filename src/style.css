@@ -32,6 +32,7 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
   display: flex;
   flex-direction: column;
   height: 100vh;
+  height: 100dvh;
 }
 
 /* ── Header ──────────────────────────────────────────────────────────────── */
@@ -390,5 +391,77 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 .toast-error   { background: var(--error-dim); border-color: var(--error); color: var(--error); }
 @keyframes toast-in { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: none; } }
 
+/* ── Attachments ─────────────────────────────────────────────────────────── */
+.attachment-strip {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  max-width: 848px; width: 100%;
+  margin: 0 auto;
+  padding: 8px 24px 0;
+  flex-shrink: 0;
+}
+.attachment-chip {
+  position: relative;
+  width: 56px; height: 56px;
+  border-radius: 6px; overflow: hidden;
+  border: 1px solid var(--border2);
+  background: var(--bg3);
+  flex-shrink: 0;
+}
+.attachment-chip img {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+.attachment-chip .remove {
+  position: absolute; top: 2px; right: 2px;
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.7);
+  color: #fff; border: none;
+  font-size: 11px; line-height: 18px; text-align: center;
+  cursor: pointer; padding: 0;
+}
+.attachment-chip .remove:hover { background: rgba(0,0,0,0.9); }
+.btn-attach { font-size: 18px; padding: 4px 10px; line-height: 1; }
+
+.msg-bubble-images {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin-bottom: 6px;
+}
+.msg-bubble-images img {
+  max-width: 200px; max-height: 200px;
+  border-radius: 6px; display: block;
+  border: 1px solid var(--border2);
+}
+.msg-user .msg-bubble-images { justify-content: flex-end; }
+.msg-bubble-empty { display: none; }
+
 /* ── Highlight.js overrides ──────────────────────────────────────────────── */
 .hljs { background: transparent !important; padding: 0 !important; }
+
+/* ── Mobile responsive ───────────────────────────────────────────────────── */
+#app { max-width: 100vw; overflow-x: hidden; }
+.block-text, .msg-bubble { min-width: 0; overflow-wrap: anywhere; }
+.prompt-input { min-width: 0; }
+
+@media (max-width: 640px) {
+  body { font-size: 13px; }
+  #header { padding: 0 10px; height: 44px; }
+  .logo-text { display: none; }
+  .status-text { display: none; }
+  .messages { padding: 12px 0; }
+  .msg { padding: 0 10px; margin-bottom: 14px; }
+  .msg-user .msg-bubble { max-width: 92%; padding: 8px 12px; }
+  .streaming-indicator { padding: 0 10px; }
+  .input-bar { padding: 8px 10px; gap: 6px; }
+  .prompt-input { padding: 9px 10px; font-size: 16px; /* prevent iOS auto-zoom on focus */ }
+  .btn { padding: 6px 10px; font-size: 13px; }
+  .btn-attach { padding: 4px 8px; font-size: 16px; }
+  .attachment-strip { padding: 6px 10px 0; }
+  .attachment-chip { width: 48px; height: 48px; }
+  .msg-bubble-images img { max-width: 60vw; max-height: 240px; }
+  .block-text pre { padding: 10px; font-size: 12px; border-radius: 6px; }
+  .block-text h1 { font-size: 1.25em; }
+  .block-text h2 { font-size: 1.1em; }
+  .tool-args-pre, .tool-output-pre { padding-left: 10px; padding-right: 10px; max-height: 240px; }
+  .block-tool .block-header { padding: 6px 10px; }
+  .dialog-box { padding: 16px; min-width: 0; width: 94vw; }
+}

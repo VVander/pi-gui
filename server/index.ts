@@ -23,6 +23,7 @@ import {
   SessionManager,
 } from "@mariozechner/pi-coding-agent";
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
+import type { ImageContent } from "@mariozechner/pi-ai";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.resolve(__dirname, "../dist");
@@ -110,6 +111,101 @@ function broadcast(wss: WebSocketServer, msg: unknown) {
       client.send(data);
     }
   }
+}
+
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10 MB decoded
+const ALLOWED_IMAGE_MIME = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+]);
+
+interface SessionListEntry {
+  file: string;
+  id: string;
+  timestamp: string;
+  preview: string;
+  isActive: boolean;
+}
+
+async function listSessions(session: AgentSession): Promise<SessionListEntry[]> {
+  const dir = session.sessionManager.getSessionDir();
+  const currentFile = session.sessionManager.getSessionFile();
+  let names: string[];
+  try {
+    names = await fs.promises.readdir(dir);
+  } catch {
+    return [];
+  }
+  const entries: SessionListEntry[] = [];
+  for (const name of names) {
+    if (!name.endsWith(".jsonl")) continue;
+    const full = path.join(dir, name);
+    try {
+      const stat = await fs.promises.stat(full);
+      if (!stat.isFile()) continue;
+      const content = await fs.promises.readFile(full, "utf8");
+      const lines = content.split("\n");
+      let header: { id?: string; timestamp?: string; type?: string } = {};
+      try {
+        header = JSON.parse(lines[0] ?? "");
+      } catch {
+        // Not a valid session file
+        continue;
+      }
+      if (header.type !== "session") continue;
+      let preview = "";
+      // Scan up to ~200 lines for the first user message
+      for (let i = 1; i < Math.min(lines.length, 200); i++) {
+        const line = lines[i];
+        if (!line || !line.trim()) continue;
+        try {
+          const entry = JSON.parse(line);
+          if (entry?.type !== "message") continue;
+          if (entry?.message?.role !== "user") continue;
+          const c = entry.message.content;
+          if (typeof c === "string") {
+            preview = c;
+          } else if (Array.isArray(c)) {
+            const t = c.find((x: { type?: string }) => x?.type === "text") as
+              | { text?: string }
+              | undefined;
+            if (t?.text) preview = t.text;
+          }
+          if (preview) break;
+        } catch {
+          // Skip malformed lines
+        }
+      }
+      entries.push({
+        file: full,
+        id: header.id ?? name,
+        timestamp: header.timestamp ?? stat.mtime.toISOString(),
+        preview: preview.replace(/\s+/g, " ").trim().slice(0, 120),
+        isActive: full === currentFile,
+      });
+    } catch (err) {
+      console.error(`[listSessions: ${name}]`, err);
+    }
+  }
+  entries.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  return entries;
+}
+
+function normaliseImages(raw: unknown): ImageContent[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ImageContent[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry as { data?: unknown; mimeType?: unknown };
+    if (typeof e.data !== "string" || typeof e.mimeType !== "string") continue;
+    if (!ALLOWED_IMAGE_MIME.has(e.mimeType)) continue;
+    // Approximate decoded size; base64 inflates by ~4/3.
+    if ((e.data.length * 3) / 4 > MAX_IMAGE_BYTES) continue;
+    out.push({ type: "image", data: e.data, mimeType: e.mimeType });
+  }
+  return out;
 }
 
 function createExtensionUIContext(wss: WebSocketServer) {
@@ -318,17 +414,20 @@ async function main() {
       try {
         switch (cmd.type) {
           case "prompt": {
-            const text = cmd.message as string;
-            if (!text) break;
+            const text = (cmd.message as string) ?? "";
+            const images = normaliseImages(cmd.images);
+            if (!text && images.length === 0) break;
+            const imageOpt = images.length > 0 ? { images } : {};
             if (session.isStreaming) {
               await session.prompt(text, {
+                ...imageOpt,
                 streamingBehavior:
                   (cmd.streamingBehavior as "steer" | "followUp") ?? "followUp",
               });
             } else {
               // Don't await — prompt is async and we don't want to block the ws handler.
               // Events stream via the subscription above.
-              session.prompt(text).catch((err) => {
+              session.prompt(text, imageOpt).catch((err) => {
                 console.error("[prompt error]", err);
               });
             }
@@ -350,6 +449,42 @@ async function main() {
               sessionId: session.sessionId,
             });
             break;
+
+          case "list_sessions": {
+            const entries = await listSessions(session);
+            ws.send(JSON.stringify({ type: "sessions_list", entries }));
+            break;
+          }
+
+          case "switch_session": {
+            const file = cmd.file;
+            if (typeof file !== "string" || !file) break;
+            const dir = session.sessionManager.getSessionDir();
+            const resolved = path.resolve(file);
+            const dirResolved = path.resolve(dir);
+            // Path-traversal guard: file must live inside the sessions dir
+            if (!resolved.startsWith(dirResolved + path.sep)) {
+              console.error("[switch_session] rejected path outside sessions dir:", file);
+              break;
+            }
+            try {
+              const ok = await session.switchSession(resolved);
+              if (!ok) {
+                console.error("[switch_session] cancelled by extension");
+                break;
+              }
+              broadcast(wss, {
+                type: "state_sync",
+                messages: session.messages,
+                streaming: session.isStreaming,
+                model: session.model?.id,
+                sessionId: session.sessionId,
+              });
+            } catch (err) {
+              console.error("[switch_session]", err);
+            }
+            break;
+          }
 
           case "extension_ui_response": {
             const id = cmd.id as string;

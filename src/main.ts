@@ -39,9 +39,14 @@ interface ToolBlock {
 }
 type Block = ThinkingBlock | TextBlock | ToolBlock;
 
+interface AttachedImage {
+  data: string; // base64 (no data: prefix)
+  mimeType: string;
+}
 interface UserItem {
   kind: "user";
   text: string;
+  images?: AttachedImage[];
 }
 interface AssistantItem {
   kind: "assistant";
@@ -49,6 +54,14 @@ interface AssistantItem {
   streaming: boolean;
 }
 type ConversationItem = UserItem | AssistantItem;
+
+interface SessionListEntry {
+  file: string;
+  id: string;
+  timestamp: string;
+  preview: string;
+  isActive: boolean;
+}
 
 interface ExtUIRequest {
   id: string;
@@ -69,7 +82,16 @@ const state = {
   streaming: false,
   items: [] as ConversationItem[],
   dialog: null as ExtUIRequest | null,
+  pendingImages: [] as AttachedImage[],
 };
+
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const ALLOWED_IMAGE_MIME = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+]);
 
 let currentAssistantItem: AssistantItem | null = null;
 let ws: WebSocket | null = null;
@@ -83,6 +105,10 @@ const $input     = document.getElementById("prompt-input") as HTMLTextAreaElemen
 const $btnSend   = document.getElementById("btn-send")!;
 const $btnAbort  = document.getElementById("btn-abort")!;
 const $btnNew    = document.getElementById("btn-new")!;
+const $btnHistory = document.getElementById("btn-history")!;
+const $btnAttach = document.getElementById("btn-attach")!;
+const $fileInput = document.getElementById("file-input") as HTMLInputElement;
+const $attachStrip = document.getElementById("attachment-strip")!;
 const $overlay   = document.getElementById("dialog-overlay")!;
 const $dialogBox = document.getElementById("dialog-box")!;
 
@@ -141,17 +167,26 @@ function handleStateSync(data: Record<string, unknown>) {
       if (msg.role === "user") {
         const content = msg.content;
         let text: string;
+        const images: AttachedImage[] = [];
         if (typeof content === "string") {
           text = content;
         } else if (Array.isArray(content)) {
-          text = (content as Array<Record<string, unknown>>)
+          const arr = content as Array<Record<string, unknown>>;
+          text = arr
             .filter((c) => c.type === "text")
             .map((c) => c.text as string)
             .join("\n");
+          for (const c of arr) {
+            if (c.type === "image" && typeof c.data === "string" && typeof c.mimeType === "string") {
+              images.push({ data: c.data, mimeType: c.mimeType });
+            }
+          }
         } else {
           text = String(content);
         }
-        state.items.push({ kind: "user", text });
+        const item: UserItem = { kind: "user", text };
+        if (images.length > 0) item.images = images;
+        state.items.push(item);
       } else if (msg.role === "assistant") {
         const contentArr = msg.content as Array<Record<string, unknown>> | undefined;
         const blocks: Block[] = [];
@@ -300,6 +335,12 @@ function handleServerEvent(event: Record<string, unknown>) {
       showToast(`Extension error: ${event.error as string}`, "error");
       break;
     }
+
+    case "sessions_list": {
+      const entries = (event.entries as SessionListEntry[]) ?? [];
+      renderSessionsDialog(entries);
+      break;
+    }
   }
 
   renderMessages();
@@ -343,7 +384,24 @@ function renderUserMsg(item: UserItem): HTMLElement {
   div.className = "msg msg-user";
   const bubble = document.createElement("div");
   bubble.className = "msg-bubble";
-  bubble.textContent = item.text;
+  if (item.images && item.images.length > 0) {
+    const imgs = document.createElement("div");
+    imgs.className = "msg-bubble-images";
+    for (const img of item.images) {
+      const el = document.createElement("img");
+      el.src = `data:${img.mimeType};base64,${img.data}`;
+      el.alt = "attachment";
+      imgs.appendChild(el);
+    }
+    bubble.appendChild(imgs);
+  }
+  if (item.text) {
+    const txt = document.createElement("div");
+    txt.textContent = item.text;
+    bubble.appendChild(txt);
+  } else if (!item.images || item.images.length === 0) {
+    bubble.textContent = item.text;
+  }
   div.appendChild(bubble);
   return div;
 }
@@ -575,13 +633,21 @@ function getArgPreview(name: string, args: unknown): string {
 // ── Input handling ────────────────────────────────────────────────────────────
 function sendPrompt() {
   const text = $input.value.trim();
-  if (!text || !state.connected || state.streaming) return;
+  const images = state.pendingImages;
+  if (!state.connected || state.streaming) return;
+  if (!text && images.length === 0) return;
 
-  state.items.push({ kind: "user", text });
+  const item: UserItem = { kind: "user", text };
+  if (images.length > 0) item.images = images.slice();
+  state.items.push(item);
   $input.value = "";
+  state.pendingImages = [];
   autoResizeInput();
+  renderAttachmentStrip();
   renderMessages();
-  send({ type: "prompt", message: text });
+  const payload: Record<string, unknown> = { type: "prompt", message: text };
+  if (images.length > 0) payload.images = images;
+  send(payload);
 }
 
 $btnSend.addEventListener("click", sendPrompt);
@@ -591,6 +657,145 @@ $btnNew.addEventListener("click", () => {
   // The server will broadcast a state_sync event to every connected client.
   send({ type: "new_session" });
 });
+$btnHistory.addEventListener("click", () => send({ type: "list_sessions" }));
+
+// ── Sessions dialog ───────────────────────────────────────────────────────────
+function renderSessionsDialog(entries: SessionListEntry[]) {
+  const $title = document.getElementById("dialog-title")!;
+  const $msg = document.getElementById("dialog-message")!;
+  const $body = document.getElementById("dialog-body")!;
+  const $actions = document.getElementById("dialog-actions")!;
+  $title.textContent = "Previous chats";
+  $msg.textContent = entries.length === 0
+    ? "No previous sessions in this folder."
+    : `${entries.length} session${entries.length === 1 ? "" : "s"} on disk. Click one to switch.`;
+  $body.innerHTML = "";
+
+  for (const entry of entries) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "dialog-select-option";
+    if (entry.isActive) {
+      btn.style.borderColor = "var(--accent)";
+      btn.style.background = "var(--accent-dim)";
+    }
+    const ts = formatTimestamp(entry.timestamp);
+    const preview = entry.preview || "(no user messages)";
+    btn.innerHTML = "";
+    const head = document.createElement("div");
+    head.style.cssText = "font-size: 11px; color: var(--text-muted); margin-bottom: 4px;";
+    head.textContent = entry.isActive ? `${ts} · current` : ts;
+    const body = document.createElement("div");
+    body.textContent = preview;
+    btn.appendChild(head);
+    btn.appendChild(body);
+    btn.addEventListener("click", () => {
+      if (!entry.isActive) send({ type: "switch_session", file: entry.file });
+      closeDialog();
+    });
+    $body.appendChild(btn);
+  }
+
+  $actions.innerHTML = "";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "btn btn-ghost";
+  cancel.textContent = "Close";
+  cancel.addEventListener("click", closeDialog);
+  $actions.appendChild(cancel);
+
+  $overlay.classList.remove("hidden");
+}
+
+function closeDialog() {
+  $overlay.classList.add("hidden");
+  state.dialog = null;
+}
+
+function formatTimestamp(ts: string): string {
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return ts;
+  const now = new Date();
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  if (sameDay) {
+    return `Today ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  }
+  return d.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+// ── Attachments ───────────────────────────────────────────────────────────────
+$btnAttach.addEventListener("click", () => $fileInput.click());
+$fileInput.addEventListener("change", async () => {
+  const files = Array.from($fileInput.files ?? []);
+  $fileInput.value = ""; // reset so re-picking the same file fires change
+  for (const file of files) {
+    if (!ALLOWED_IMAGE_MIME.has(file.type)) {
+      showToast(`Unsupported file type: ${file.type || "unknown"}`, "warning");
+      continue;
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      showToast(`Image too large: ${file.name} (${Math.round(file.size / 1024 / 1024)}MB, max 10MB)`, "warning");
+      continue;
+    }
+    try {
+      const data = await fileToBase64(file);
+      state.pendingImages.push({ data, mimeType: file.type });
+    } catch (err) {
+      showToast(`Failed to read ${file.name}`, "error");
+      console.error("[attach error]", err);
+    }
+  }
+  renderAttachmentStrip();
+});
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      const comma = result.indexOf(",");
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+function renderAttachmentStrip() {
+  $attachStrip.innerHTML = "";
+  if (state.pendingImages.length === 0) {
+    $attachStrip.classList.add("hidden");
+    return;
+  }
+  $attachStrip.classList.remove("hidden");
+  state.pendingImages.forEach((img, idx) => {
+    const chip = document.createElement("div");
+    chip.className = "attachment-chip";
+    const el = document.createElement("img");
+    el.src = `data:${img.mimeType};base64,${img.data}`;
+    el.alt = "attachment preview";
+    chip.appendChild(el);
+    const rm = document.createElement("button");
+    rm.className = "remove";
+    rm.type = "button";
+    rm.textContent = "×";
+    rm.title = "Remove";
+    rm.addEventListener("click", () => {
+      state.pendingImages.splice(idx, 1);
+      renderAttachmentStrip();
+    });
+    chip.appendChild(rm);
+    $attachStrip.appendChild(chip);
+  });
+}
 
 $input.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
