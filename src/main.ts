@@ -55,6 +55,14 @@ interface AssistantItem {
 }
 type ConversationItem = UserItem | AssistantItem;
 
+interface SessionListEntry {
+  file: string;
+  id: string;
+  timestamp: string;
+  preview: string;
+  isActive: boolean;
+}
+
 interface ExtUIRequest {
   id: string;
   method: "select" | "confirm" | "input" | "editor" | "notify" | "setStatus" | "setWidget" | "setTitle" | "set_editor_text";
@@ -97,6 +105,7 @@ const $input     = document.getElementById("prompt-input") as HTMLTextAreaElemen
 const $btnSend   = document.getElementById("btn-send")!;
 const $btnAbort  = document.getElementById("btn-abort")!;
 const $btnNew    = document.getElementById("btn-new")!;
+const $btnHistory = document.getElementById("btn-history")!;
 const $btnAttach = document.getElementById("btn-attach")!;
 const $fileInput = document.getElementById("file-input") as HTMLInputElement;
 const $attachStrip = document.getElementById("attachment-strip")!;
@@ -324,6 +333,12 @@ function handleServerEvent(event: Record<string, unknown>) {
 
     case "extension_error": {
       showToast(`Extension error: ${event.error as string}`, "error");
+      break;
+    }
+
+    case "sessions_list": {
+      const entries = (event.entries as SessionListEntry[]) ?? [];
+      renderSessionsDialog(entries);
       break;
     }
   }
@@ -642,6 +657,79 @@ $btnNew.addEventListener("click", () => {
   // The server will broadcast a state_sync event to every connected client.
   send({ type: "new_session" });
 });
+$btnHistory.addEventListener("click", () => send({ type: "list_sessions" }));
+
+// ── Sessions dialog ───────────────────────────────────────────────────────────
+function renderSessionsDialog(entries: SessionListEntry[]) {
+  const $title = document.getElementById("dialog-title")!;
+  const $msg = document.getElementById("dialog-message")!;
+  const $body = document.getElementById("dialog-body")!;
+  const $actions = document.getElementById("dialog-actions")!;
+  $title.textContent = "Previous chats";
+  $msg.textContent = entries.length === 0
+    ? "No previous sessions in this folder."
+    : `${entries.length} session${entries.length === 1 ? "" : "s"} on disk. Click one to switch.`;
+  $body.innerHTML = "";
+
+  for (const entry of entries) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "dialog-select-option";
+    if (entry.isActive) {
+      btn.style.borderColor = "var(--accent)";
+      btn.style.background = "var(--accent-dim)";
+    }
+    const ts = formatTimestamp(entry.timestamp);
+    const preview = entry.preview || "(no user messages)";
+    btn.innerHTML = "";
+    const head = document.createElement("div");
+    head.style.cssText = "font-size: 11px; color: var(--text-muted); margin-bottom: 4px;";
+    head.textContent = entry.isActive ? `${ts} · current` : ts;
+    const body = document.createElement("div");
+    body.textContent = preview;
+    btn.appendChild(head);
+    btn.appendChild(body);
+    btn.addEventListener("click", () => {
+      if (!entry.isActive) send({ type: "switch_session", file: entry.file });
+      closeDialog();
+    });
+    $body.appendChild(btn);
+  }
+
+  $actions.innerHTML = "";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "btn btn-ghost";
+  cancel.textContent = "Close";
+  cancel.addEventListener("click", closeDialog);
+  $actions.appendChild(cancel);
+
+  $overlay.classList.remove("hidden");
+}
+
+function closeDialog() {
+  $overlay.classList.add("hidden");
+  state.dialog = null;
+}
+
+function formatTimestamp(ts: string): string {
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return ts;
+  const now = new Date();
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  if (sameDay) {
+    return `Today ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  }
+  return d.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
 
 // ── Attachments ───────────────────────────────────────────────────────────────
 $btnAttach.addEventListener("click", () => $fileInput.click());
